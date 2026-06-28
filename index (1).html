@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Mi Ciclo">
+<meta name="theme-color" content="#C4587A">
+<title>Mi Ciclo</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #FAF0F4; font-family: system-ui, -apple-system, sans-serif; }
+  input[type="date"]::-webkit-calendar-picker-indicator { opacity: 0.5; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+const ROSE    = "#C4587A";
+const ROSE_LT = "#F2D6DF";
+const BLUSH   = "#FAF0F4";
+const INK     = "#2B1C23";
+const MUTED   = "#8C7078";
+const GREEN   = "#4A9B7F";
+
+function formatDate(d) {
+  return d.toLocaleDateString("es-CL", { weekday: "short", day: "numeric", month: "long" });
+}
+function formatDateShort(d) {
+  return d.toLocaleDateString("es-CL", { day: "numeric", month: "short", year: "numeric" });
+}
+function formatMonth(d) {
+  return d.toLocaleDateString("es-CL", { month: "long", year: "numeric" });
+}
+function toLocalStr(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth()+1).padStart(2,"0");
+  const day = String(d.getDate()).padStart(2,"0");
+  return `${y}-${m}-${day}`;
+}
+
+const STORAGE_KEY = "ciclo_data_v1";
+
+function loadData() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return { history: [] };
+    return JSON.parse(raw);
+  } catch { return { history: [] }; }
+}
+function saveData(data) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch {}
+}
+
+function calcAvgCycle(history) {
+  const userCycles = history.map(h => h.cycleDuration).filter(d => d && d > 10 && d < 60);
+  if (userCycles.length >= 1)
+    return Math.round(userCycles.reduce((a,b)=>a+b,0)/userCycles.length);
+  if (history.length < 2) return 28;
+  const gaps = [];
+  for (let i = 1; i < history.length; i++) {
+    const a = new Date(history[i-1].start+"T00:00:00");
+    const b = new Date(history[i].start+"T00:00:00");
+    const diff = Math.round((b-a)/(1000*60*60*24));
+    if (diff > 10 && diff < 60) gaps.push(diff);
+  }
+  if (!gaps.length) return 28;
+  return Math.round(gaps.reduce((a,b)=>a+b,0)/gaps.length);
+}
+
+function calcAvgDuration(history) {
+  if (!history.length) return 5;
+  const valid = history.map(h=>h.duration).filter(d=>d>=1&&d<=15);
+  if (!valid.length) return 5;
+  return Math.round(valid.reduce((a,b)=>a+b,0)/valid.length);
+}
+
+function getProjections(lastStart, avgCycle, avgDuration, count=8) {
+  const out = [];
+  let cur = new Date(lastStart+"T00:00:00");
+  for (let i=0; i<count; i++) {
+    const next = new Date(cur); next.setDate(cur.getDate()+avgCycle);
+    const end  = new Date(next); end.setDate(next.getDate()+avgDuration-1);
+    out.push({ start: next, end });
+    cur = next;
+  }
+  return out;
+}
+
+function Stepper({ value, min, max, onChange }) {
+  return (
+    <div style={{ display:"flex", alignItems:"center", border:`1.5px solid ${ROSE_LT}`, borderRadius:12, overflow:"hidden", background:BLUSH }}>
+      <button onClick={()=>onChange(-1)} style={{ width:52, height:52, border:"none", background:"none", cursor:"pointer", fontSize:24, color:ROSE, WebkitTapHighlightColor:"transparent" }}>−</button>
+      <span style={{ flex:1, textAlign:"center", fontSize:17, fontWeight:500, color:INK }}>{value}</span>
+      <button onClick={()=>onChange(1)} style={{ width:52, height:52, border:"none", background:"none", cursor:"pointer", fontSize:24, color:ROSE, WebkitTapHighlightColor:"transparent" }}>+</button>
+    </div>
+  );
+}
+
+function StatBox({ label, value }) {
+  return (
+    <div style={{ background:ROSE_LT, borderRadius:12, padding:"14px 12px" }}>
+      <p style={{ fontSize:11, color:MUTED, marginBottom:4 }}>{label}</p>
+      <p style={{ fontSize:18, color:ROSE, fontWeight:600 }}>{value}</p>
+    </div>
+  );
+}
+
+const labelSt = {
+  display:"block", fontSize:11, fontWeight:600,
+  textTransform:"uppercase", letterSpacing:"0.8px",
+  color:MUTED, marginBottom:7
+};
+
+function App() {
+  const [tab, setTab]           = useState("registro");
+  const [data, setData]         = useState(() => loadData());
+  const [startDate, setStartDate] = useState(toLocalStr(new Date()));
+  const [duration, setDuration] = useState(null);
+  const [cycleDur, setCycleDur] = useState(null);
+  const [saved, setSaved]       = useState(false);
+
+  const avgCycle    = calcAvgCycle(data.history);
+  const avgDuration = calcAvgDuration(data.history);
+  const effDur   = duration  !== null ? duration  : avgDuration;
+  const effCycle = cycleDur  !== null ? cycleDur  : avgCycle;
+
+  const lastEntry = data.history.length > 0 ? data.history[data.history.length-1] : null;
+
+  useEffect(() => {
+    if (lastEntry) {
+      setDuration(lastEntry.duration);
+      if (lastEntry.cycleDuration) setCycleDur(lastEntry.cycleDuration);
+    }
+  }, []);
+
+  function guardar() {
+    if (!startDate) return;
+    if (data.history.find(h=>h.start===startDate)) {
+      setSaved(true); setTimeout(()=>setSaved(false),2000); return;
+    }
+    const newHistory = [...data.history, { start:startDate, duration:effDur, cycleDuration:effCycle }]
+      .sort((a,b)=>a.start.localeCompare(b.start));
+    const newData = { ...data, history: newHistory };
+    setData(newData); saveData(newData);
+    setSaved(true); setTimeout(()=>setSaved(false),2500);
+  }
+
+  function eliminar(idx) {
+    const newHistory = data.history.filter((_,i)=>i!==idx);
+    const newData = { ...data, history: newHistory };
+    setData(newData); saveData(newData);
+  }
+
+  let nextPeriod = null;
+  if (lastEntry) {
+    const last = new Date(lastEntry.start+"T00:00:00");
+    const next = new Date(last); next.setDate(last.getDate()+avgCycle);
+    const end  = new Date(next); end.setDate(next.getDate()+avgDuration-1);
+    const todayMid = new Date(); todayMid.setHours(0,0,0,0);
+    const diff = Math.round((next-todayMid)/(1000*60*60*24));
+    nextPeriod = { start:next, end, diff };
+  }
+
+  const projections = lastEntry ? getProjections(lastEntry.start, avgCycle, avgDuration) : [];
+
+  const tabSt = (t) => ({
+    flex:1, padding:"11px 4px", border:"none", background:"none",
+    fontFamily:"inherit", fontSize:12, fontWeight:600,
+    textTransform:"uppercase", letterSpacing:"0.6px", cursor:"pointer",
+    color: tab===t ? ROSE : MUTED,
+    borderBottom: `2px solid ${tab===t ? ROSE : "transparent"}`,
+    WebkitTapHighlightColor:"transparent"
+  });
+
+  return (
+    <div style={{ minHeight:"100vh", background:BLUSH, display:"flex", alignItems:"flex-start", justifyContent:"center", padding:"16px 12px 40px" }}>
+      <div style={{ background:"#fff", borderRadius:24, width:"100%", maxWidth:440, boxShadow:"0 4px 40px rgba(196,88,122,0.12)", overflow:"hidden" }}>
+
+        {/* HEADER */}
+        <div style={{ background:ROSE, padding:"24px 24px 18px", color:"#fff" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+            <div>
+              <h1 style={{ fontSize:21, fontWeight:500, letterSpacing:-0.3 }}>Mi Ciclo</h1>
+              {nextPeriod && (
+                <p style={{ fontSize:13, opacity:0.85, marginTop:3 }}>
+                  {nextPeriod.diff < 0
+                    ? `Esperado hace ${Math.abs(nextPeriod.diff)} días`
+                    : nextPeriod.diff === 0
+                    ? "Esperado hoy"
+                    : `Próximo en ${nextPeriod.diff} días`}
+                </p>
+              )}
+              {!lastEntry && <p style={{ fontSize:13, opacity:0.75, marginTop:3 }}>Registra tu primer ciclo</p>}
+            </div>
+            {data.history.length >= 1 && (
+              <div style={{ textAlign:"right" }}>
+                <p style={{ fontSize:11, opacity:0.7 }}>Promedio ciclo</p>
+                <p style={{ fontSize:22, fontWeight:600 }}>{avgCycle}d</p>
+              </div>
+            )}
+          </div>
+          {nextPeriod && (
+            <div style={{ marginTop:12, background:"rgba(255,255,255,0.15)", borderRadius:10, padding:"10px 14px" }}>
+              <p style={{ fontSize:11, opacity:0.8 }}>Inicio estimado</p>
+              <p style={{ fontSize:14, fontWeight:500, marginTop:2 }}>{formatDate(nextPeriod.start)} → {formatDateShort(nextPeriod.end)}</p>
+            </div>
+          )}
+        </div>
+
+        {/* TABS */}
+        <div style={{ display:"flex", borderBottom:`1px solid ${ROSE_LT}` }}>
+          <button style={tabSt("registro")}   onClick={()=>setTab("registro")}>Registrar</button>
+          <button style={tabSt("proyeccion")} onClick={()=>setTab("proyeccion")}>Proyección</button>
+          <button style={tabSt("historial")}  onClick={()=>setTab("historial")}>Historial</button>
+        </div>
+
+        <div style={{ padding:"22px 22px 28px" }}>
+
+          {/* TAB REGISTRO */}
+          {tab==="registro" && (
+            <div>
+              <div style={{ marginBottom:18 }}>
+                <label style={labelSt}>Inicio del período</label>
+                <input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)}
+                  style={{ width:"100%", padding:"12px 14px", border:`1.5px solid ${ROSE_LT}`, borderRadius:12, fontFamily:"inherit", fontSize:15, color:INK, background:BLUSH, outline:"none" }} />
+              </div>
+
+              <div style={{ marginBottom:18 }}>
+                <label style={labelSt}>
+                  Duración del período (días)
+                  {data.history.length>=1 && <span style={{ color:ROSE, fontWeight:400, textTransform:"none", letterSpacing:0 }}> · prom. {avgDuration}d</span>}
+                </label>
+                <Stepper value={effDur} min={1} max={15} onChange={d=>setDuration(Math.min(15,Math.max(1,effDur+d)))} />
+              </div>
+
+              <div style={{ marginBottom:22 }}>
+                <label style={labelSt}>
+                  Duración del ciclo (días)
+                  {data.history.length>=1 && <span style={{ color:ROSE, fontWeight:400, textTransform:"none", letterSpacing:0 }}> · prom. {avgCycle}d</span>}
+                </label>
+                <Stepper value={effCycle} min={21} max={45} onChange={d=>setCycleDur(Math.min(45,Math.max(21,effCycle+d)))} />
+                <p style={{ fontSize:11, color:MUTED, marginTop:5 }}>
+                  {data.history.length>=1 ? "Ajusta si este ciclo fue diferente" : "Promedio: 21–35 días"}
+                </p>
+              </div>
+
+              <button onClick={guardar}
+                style={{ width:"100%", padding:15, background:saved?GREEN:ROSE, color:"#fff", border:"none", borderRadius:12, fontSize:15, fontWeight:500, cursor:"pointer", fontFamily:"inherit", transition:"background 0.3s", WebkitTapHighlightColor:"transparent" }}>
+                {saved ? "✓ Guardado" : "Guardar ciclo"}
+              </button>
+
+              {data.history.length<2 && (
+                <p style={{ fontSize:12, color:MUTED, textAlign:"center", marginTop:14 }}>
+                  Con 2+ registros calcularé tu promedio real
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* TAB PROYECCIÓN */}
+          {tab==="proyeccion" && (
+            <div>
+              {!lastEntry ? (
+                <p style={{ color:MUTED, fontSize:14, textAlign:"center", padding:"20px 0" }}>
+                  Registra al menos un ciclo para ver proyecciones.
+                </p>
+              ) : (
+                <>
+                  <p style={{ fontSize:12, color:MUTED, marginBottom:16 }}>
+                    {data.history.length>=2
+                      ? `${data.history.length} registros · promedio ${avgCycle} días`
+                      : `Ciclo de ${avgCycle} días (ajusta con más registros)`}
+                  </p>
+                  {projections.map((p,i) => {
+                    const todayMid = new Date(); todayMid.setHours(0,0,0,0);
+                    const isPast    = p.end < todayMid;
+                    const isCurrent = p.start <= todayMid && p.end >= todayMid;
+                    const diff = Math.round((p.start-todayMid)/(1000*60*60*24));
+                    return (
+                      <div key={i} style={{ display:"flex", alignItems:"center", gap:12, padding:"11px 12px", borderRadius:12, marginBottom:8, background:isCurrent?ROSE_LT:isPast?"#f5f5f5":BLUSH, opacity:isPast?0.45:1 }}>
+                        <div style={{ width:34, height:34, borderRadius:"50%", background:isCurrent?ROSE:isPast?"#ccc":ROSE_LT, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                          <span style={{ fontSize:12, fontWeight:700, color:isCurrent||isPast?"#fff":ROSE }}>{i+1}</span>
+                        </div>
+                        <div style={{ flex:1 }}>
+                          <p style={{ fontSize:14, fontWeight:500, color:INK, textTransform:"capitalize" }}>{formatMonth(p.start)}</p>
+                          <p style={{ fontSize:12, color:MUTED, marginTop:1 }}>{formatDateShort(p.start)} – {formatDateShort(p.end)}</p>
+                        </div>
+                        <div style={{ textAlign:"right", flexShrink:0 }}>
+                          {isCurrent
+                            ? <span style={{ fontSize:11, background:ROSE, color:"#fff", padding:"3px 8px", borderRadius:20 }}>Ahora</span>
+                            : !isPast && <span style={{ fontSize:12, color:MUTED }}>en {diff}d</span>
+                          }
+                        </div>
+                      </div>
+                    );
+                  })}
+                </>
+              )}
+            </div>
+          )}
+
+          {/* TAB HISTORIAL */}
+          {tab==="historial" && (
+            <div>
+              {!data.history.length ? (
+                <p style={{ color:MUTED, fontSize:14, textAlign:"center", padding:"20px 0" }}>Aún no hay registros.</p>
+              ) : (
+                <>
+                  {data.history.length>=2 && (
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:18 }}>
+                      <StatBox label="Promedio ciclo"   value={`${avgCycle} días`} />
+                      <StatBox label="Promedio período" value={`${avgDuration} días`} />
+                    </div>
+                  )}
+                  {[...data.history].reverse().map((h,i) => {
+                    const realIdx = data.history.length-1-i;
+                    const start = new Date(h.start+"T00:00:00");
+                    return (
+                      <div key={i} style={{ display:"flex", alignItems:"center", gap:12, padding:"12px 0", borderBottom:`1px solid ${ROSE_LT}` }}>
+                        <div style={{ width:8, height:8, borderRadius:"50%", background:ROSE, flexShrink:0 }} />
+                        <div style={{ flex:1 }}>
+                          <p style={{ fontSize:14, color:INK }}>{formatDateShort(start)}</p>
+                          <p style={{ fontSize:12, color:MUTED }}>Período: {h.duration}d{h.cycleDuration?` · Ciclo: ${h.cycleDuration}d`:""}</p>
+                        </div>
+                        <button onClick={()=>eliminar(realIdx)}
+                          style={{ background:"none", border:"none", color:MUTED, cursor:"pointer", fontSize:20, padding:"0 4px", lineHeight:1, WebkitTapHighlightColor:"transparent" }}>×</button>
+                      </div>
+                    );
+                  })}
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
